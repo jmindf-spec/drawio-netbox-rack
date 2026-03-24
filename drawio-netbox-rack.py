@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
 Визуализация стойки NetBox в draw.io:
-- full‑depth устройства отображаются на обеих сторонах,
-- на противоположной стороне – штриховка,
-- цвета: front – #d0e0f0, rear – #f0e0d0,
-- имя, тип, серийный номер – отдельными строками.
+- front и rear view (опционально side‑by‑side)
+- full‑depth устройства на обеих сторонах, противоположная сторона – штриховка
+- зарезервированные юниты (reserved) – серый фон, пунктирная граница
+- отображение имени, типа, SN устройства на отдельных строках
+- поддержка desc_units, отладочный режим, SSL
 """
 
 import argparse
@@ -39,6 +40,18 @@ def fetch_devices_in_rack(session, rack_id, base_url):
         devices.extend(data['results'])
         devices_url = data['next']
     return devices
+
+def fetch_rack_reservations(session, rack_id, base_url):
+    """Получить список резервирований для стойки."""
+    reservations_url = f"{base_url}/api/dcim/rack-reservations/?rack_id={rack_id}"
+    reservations = []
+    while reservations_url:
+        resp = session.get(reservations_url)
+        resp.raise_for_status()
+        data = resp.json()
+        reservations.extend(data['results'])
+        reservations_url = data['next']
+    return reservations
 
 def enrich_device_types(session, devices, base_url, debug=False):
     """Подгружаем полные данные типов устройств (u_height, is_full_depth)."""
@@ -78,7 +91,31 @@ def get_face_value(face_field):
         return face_field.get('value')
     return face_field
 
-def build_side_data(devices, u_height, side, desc_units=False, debug=False):
+def build_reserved_slots(reservations, u_height, desc_units=False, debug=False):
+    """
+    Создаёт массив reserved_slots размера u_height, где для каждого юнита указан текст резервирования,
+    если он есть, или None.
+    """
+    reserved_slots = [None] * u_height
+    for res in reservations:
+        units = res.get('units')  # список номеров юнитов
+        description = res.get('description', 'Reserved')
+        if not units:
+            continue
+        for unit in units:
+            idx = unit - 1
+            if 0 <= idx < u_height:
+                if reserved_slots[idx] is None:
+                    reserved_slots[idx] = description
+                else:
+                    # Если несколько резервирований на один юнит, объединим через запятую
+                    reserved_slots[idx] = f"{reserved_slots[idx]}, {description}"
+    if debug:
+        reserved_count = sum(1 for x in reserved_slots if x is not None)
+        print(f"Зарезервировано юнитов: {reserved_count}")
+    return reserved_slots
+
+def build_side_data(devices, u_height, side, reserved_slots, desc_units=False, debug=False):
     """
     Возвращает список устройств для указанной стороны (front/rear).
     Если устройство full-depth, оно включается в обе стороны.
@@ -99,17 +136,13 @@ def build_side_data(devices, u_height, side, desc_units=False, debug=False):
             continue
         is_full_depth = device_type.get('is_full_depth', False)
 
-        # Решаем, включать ли устройство в эту сторону
         include = False
         is_opposite = False
         if face == side:
             include = True
         elif is_full_depth:
-            # full-depth устройство добавляем на обе стороны
             include = True
-            is_opposite = (face != side)  # если face не совпадает с текущей стороной, это противоположная
-            if face is None:
-                is_opposite = False  # нет чёткой противоположной стороны
+            is_opposite = (face != side) if face is not None else False
 
         if not include:
             continue
@@ -128,7 +161,7 @@ def build_side_data(devices, u_height, side, desc_units=False, debug=False):
         print(f"Сторона {side}: найдено {len(side_devices)} устройств (включая full-depth)")
     return side_devices
 
-def generate_rack_view(root, rack_name, u_height, devices, desc_units,
+def generate_rack_view(root, rack_name, u_height, devices, reserved_slots, desc_units,
                        offset_x, offset_y, side_label, fill_color):
     """
     Генерирует одну стойку (front или rear) в указанных координатах.
@@ -136,7 +169,6 @@ def generate_rack_view(root, rack_name, u_height, devices, desc_units,
     unit_width = 200
     unit_height_px = 50
 
-    # Рамка стойки (без изменений)
     rack_width = unit_width
     rack_height = u_height * unit_height_px
     frame_id = f"frame_{side_label}"
@@ -149,7 +181,7 @@ def generate_rack_view(root, rack_name, u_height, devices, desc_units,
         'as': 'geometry'
     })
 
-    # Заголовок (без изменений)
+    # Заголовок
     title_id = f"title_{side_label}"
     title = ET.SubElement(root, 'mxCell', id=title_id, value=f"{rack_name} – {side_label.capitalize()}",
                           style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1;",
@@ -160,7 +192,7 @@ def generate_rack_view(root, rack_name, u_height, devices, desc_units,
         'as': 'geometry'
     })
 
-    # Подписи юнитов (без изменений)
+    # Подписи юнитов
     label_style = "text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#666666;"
     for i in range(1, u_height + 1):
         if desc_units:
@@ -172,6 +204,26 @@ def generate_rack_view(root, rack_name, u_height, devices, desc_units,
         ET.SubElement(label, 'mxGeometry', attrib={
             'x': str(offset_x - 25), 'y': str(y),
             'width': "20", 'height': str(unit_height_px),
+            'as': 'geometry'
+        })
+
+    # Зарезервированные юниты (серые прямоугольники с пунктиром, текст "RESERVED" или описание)
+    reserved_style = "rounded=0;whiteSpace=wrap;html=1;fillColor=#e0e0e0;strokeColor=#000000;strokeStyle=dashed;fontColor=#666666;fontSize=10;align=center;verticalAlign=middle;"
+    for i in range(1, u_height + 1):
+        idx = i - 1
+        if reserved_slots[idx] is None:
+            continue
+        # Координата y
+        if desc_units:
+            y = offset_y + (i - 1) * unit_height_px
+        else:
+            y = offset_y + (u_height - i) * unit_height_px
+        # Рисуем прямоугольник, занимающий весь юнит
+        reserved_cell = ET.SubElement(root, 'mxCell', id=f"reserved_{side_label}_{i}", value=reserved_slots[idx],
+                                      style=reserved_style, vertex="1", parent="1")
+        ET.SubElement(reserved_cell, 'mxGeometry', attrib={
+            'x': str(offset_x), 'y': str(y),
+            'width': str(unit_width), 'height': str(unit_height_px),
             'as': 'geometry'
         })
 
@@ -203,12 +255,9 @@ def generate_rack_view(root, rack_name, u_height, devices, desc_units,
             parts.append(serial_str)
         value = "<br/>".join(parts)
 
-        # Базовый стиль
         style = f"rounded=0;whiteSpace=wrap;html=1;fillColor={fill_color};strokeColor=#6c8ebf;fontColor=#1e1e1e;fontSize=12;align=center;verticalAlign=middle;"
         if is_opposite:
-            # Для противоположной стороны добавляем штриховку
             style += "fillStyle=hatch;hatchColor=#000000;"
-        # Если не opposite, оставляем сплошную заливку
 
         if desc_units:
             y = offset_y + (position - 1) * unit_height_px
@@ -224,7 +273,7 @@ def generate_rack_view(root, rack_name, u_height, devices, desc_units,
         })
         next_id += 1
 
-def generate_drawio(rack_name, u_height, side_data, desc_units, both_views):
+def generate_drawio(rack_name, u_height, side_data, reserved_slots, desc_units, both_views):
     mxfile = ET.Element('mxfile', host="app.diagrams.net", modified="2024-01-01T00:00:00.000Z",
                         agent="Python NetBox to Draw.io", version="21.0.0")
     diagram = ET.SubElement(mxfile, 'diagram', id="rack-diagram", name="Page-1")
@@ -239,16 +288,15 @@ def generate_drawio(rack_name, u_height, side_data, desc_units, both_views):
 
     if both_views:
         # Левая стойка – front
-        generate_rack_view(root, rack_name, u_height, side_data['front'], desc_units,
+        generate_rack_view(root, rack_name, u_height, side_data['front'], reserved_slots, desc_units,
                            offset_x=50, offset_y=50, side_label='front', fill_color='#d0e0f0')
         # Правая стойка – rear
-        generate_rack_view(root, rack_name, u_height, side_data['rear'], desc_units,
+        generate_rack_view(root, rack_name, u_height, side_data['rear'], reserved_slots, desc_units,
                            offset_x=300, offset_y=50, side_label='rear', fill_color='#f0e0d0')
     else:
-        # Одиночный вид
         side = side_data['side']
         fill_color = '#d0e0f0' if side == 'front' else '#f0e0d0'
-        generate_rack_view(root, rack_name, u_height, side_data['devices'], desc_units,
+        generate_rack_view(root, rack_name, u_height, side_data['devices'], reserved_slots, desc_units,
                            offset_x=50, offset_y=50, side_label=side, fill_color=fill_color)
 
     return mxfile
@@ -299,22 +347,26 @@ def main():
         base_url = base_match.group(1)
 
         devices = fetch_devices_in_rack(session, rack_id, base_url)
+        reservations = fetch_rack_reservations(session, rack_id, base_url)
 
         if args.debug:
             print(f"Получено устройств: {len(devices)}")
+            print(f"Получено резервирований: {len(reservations)}")
 
         enrich_device_types(session, devices, base_url, debug=args.debug)
 
+        reserved_slots = build_reserved_slots(reservations, u_height, desc_units, debug=args.debug)
+
         if args.both_views:
-            front_devices = build_side_data(devices, u_height, 'front', desc_units, args.debug)
-            rear_devices = build_side_data(devices, u_height, 'rear', desc_units, args.debug)
+            front_devices = build_side_data(devices, u_height, 'front', reserved_slots, desc_units, args.debug)
+            rear_devices = build_side_data(devices, u_height, 'rear', reserved_slots, desc_units, args.debug)
             side_data = {'front': front_devices, 'rear': rear_devices}
         else:
             side = args.side
-            side_devices = build_side_data(devices, u_height, side, desc_units, args.debug)
+            side_devices = build_side_data(devices, u_height, side, reserved_slots, desc_units, args.debug)
             side_data = {'side': side, 'devices': side_devices}
 
-        mxfile = generate_drawio(rack_name, u_height, side_data, desc_units, args.both_views)
+        mxfile = generate_drawio(rack_name, u_height, side_data, reserved_slots, desc_units, args.both_views)
 
         with open(args.output, 'w', encoding='utf-8') as f:
             f.write(prettify(mxfile))
