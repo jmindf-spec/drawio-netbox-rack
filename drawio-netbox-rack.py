@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""
+Визуализация стойки NetBox в draw.io:
+- full‑depth устройства отображаются на обеих сторонах,
+- на противоположной стороне – штриховка,
+- цвета: front – #d0e0f0, rear – #f0e0d0,
+- имя, тип, серийный номер – отдельными строками.
+"""
 
 import argparse
 import requests
@@ -72,6 +79,11 @@ def get_face_value(face_field):
     return face_field
 
 def build_side_data(devices, u_height, side, desc_units=False, debug=False):
+    """
+    Возвращает список устройств для указанной стороны (front/rear).
+    Если устройство full-depth, оно включается в обе стороны.
+    Для стороны, не совпадающей с face, добавляется флаг 'is_opposite_side'.
+    """
     side_devices = []
     for dev in devices:
         name = dev.get('name')
@@ -197,103 +209,6 @@ def generate_rack_view(root, rack_name, u_height, devices, desc_units,
             # Для противоположной стороны добавляем штриховку
             style += "fillStyle=hatch;hatchColor=#000000;"
         # Если не opposite, оставляем сплошную заливку
-
-        if desc_units:
-            y = offset_y + (position - 1) * unit_height_px
-        else:
-            y = offset_y + (u_height - position - (height_u - 1)) * unit_height_px
-
-        cell = ET.SubElement(root, 'mxCell', id=f"device_{side_label}_{next_id}", value=value,
-                             style=style, vertex="1", parent="1")
-        ET.SubElement(cell, 'mxGeometry', attrib={
-            'x': str(offset_x), 'y': str(y),
-            'width': str(unit_width), 'height': str(height_u * unit_height_px),
-            'as': 'geometry'
-        })
-        next_id += 1
-
-    """
-    Генерирует одну стойку (front или rear) в указанных координатах.
-    """
-    unit_width = 200
-    unit_height_px = 50
-
-    # Рамка стойки
-    rack_width = unit_width
-    rack_height = u_height * unit_height_px
-    frame_id = f"frame_{side_label}"
-    frame = ET.SubElement(root, 'mxCell', id=frame_id, value="",
-                          style="rounded=0;whiteSpace=wrap;html=1;strokeColor=#000000;fillColor=none;",
-                          vertex="1", parent="1")
-    ET.SubElement(frame, 'mxGeometry', attrib={
-        'x': str(offset_x), 'y': str(offset_y),
-        'width': str(rack_width), 'height': str(rack_height),
-        'as': 'geometry'
-    })
-
-    # Заголовок
-    title_id = f"title_{side_label}"
-    title = ET.SubElement(root, 'mxCell', id=title_id, value=f"{rack_name} – {side_label.capitalize()}",
-                          style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1;",
-                          vertex="1", parent="1")
-    ET.SubElement(title, 'mxGeometry', attrib={
-        'x': str(offset_x + rack_width/2), 'y': str(offset_y - 25),
-        'width': "200", 'height': "30",
-        'as': 'geometry'
-    })
-
-    # Подписи юнитов
-    label_style = "text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#666666;"
-    for i in range(1, u_height + 1):
-        if desc_units:
-            y = offset_y + (i - 1) * unit_height_px
-        else:
-            y = offset_y + (u_height - i) * unit_height_px
-        label = ET.SubElement(root, 'mxCell', id=f"unit_label_{side_label}_{i}", value=str(i),
-                              style=label_style, vertex="1", parent="1")
-        ET.SubElement(label, 'mxGeometry', attrib={
-            'x': str(offset_x - 25), 'y': str(y),
-            'width': "20", 'height': str(unit_height_px),
-            'as': 'geometry'
-        })
-
-    # Устройства
-    next_id = 2
-    for dev in devices:
-        position = dev['position']
-        height_u = dev['height_u']
-        is_opposite = dev.get('is_opposite_side', False)
-        name = html_escape(dev.get('name') or "")
-        device_type_obj = dev.get('device_type')
-        manufacturer = html_escape(device_type_obj.get('manufacturer', {}).get('name', ''))
-        model = html_escape(device_type_obj.get('model', ''))
-        if manufacturer and model:
-            device_type_str = f"{manufacturer} {model}"
-        elif model:
-            device_type_str = model
-        elif manufacturer:
-            device_type_str = manufacturer
-        else:
-            device_type_str = ""
-        serial = html_escape(dev.get('serial', ''))
-        serial_str = f"SN: {serial}" if serial else ""
-
-        parts = [name]
-        if device_type_str:
-            parts.append(device_type_str)
-        if serial_str:
-            parts.append(serial_str)
-        value = "<br/>".join(parts)
-
-
-        #style = f"rounded=0;whiteSpace=wrap;html=1;fillColor={fill_color};strokeColor=#6c8ebf;fontColor=#1e1e1e;fontSize=12;align=center;verticalAlign=middle;"
-        #if is_opposite:
-        #    style += "fillPattern=hatch;hatchColor=#ffffff;hatchStyle=1;"
-
-
-        style = f"rounded=0;whiteSpace=wrap;html=1;fillColor={fill_color};strokeColor=#6c8ebf;fontColor=#1e1e1e;fontSize=12;align=center;verticalAlign=middle;"
-        if is_opposite:
-            style += f"fillStyle=hatch;hatchColor={fill_color};"
 
         if desc_units:
             y = offset_y + (position - 1) * unit_height_px
